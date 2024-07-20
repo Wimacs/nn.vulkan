@@ -1,14 +1,7 @@
-/*
-* Vulkan Example - Compute shader image processing
-*
-* This sample uses a compute shader to apply different filters to an image
-*
-* Copyright (C) 2016-2023 by Sascha Willems - www.saschawillems.de
-*
-* This code is licensed under the MIT license (MIT) (http://opensource.org/licenses/MIT)
-*/
-
 #include "vulkanexamplebase.h"
+
+#define MAX_NEURONS_PER_LAYER 64
+#define MAX_LAYERS 5
 
 // Vertex layout for this example
 struct Vertex {
@@ -23,6 +16,18 @@ public:
 	vks::Texture2D textureColorMap;
 	// Storage image that the compute shader uses to apply the filter effect to
 	vks::Texture2D storageImage;
+
+	vks::Buffer weights;
+	vks::Buffer Biases;
+
+	vks::Buffer gradientWeights;
+	vks::Buffer gradientBiases;
+
+	vks::Buffer adamWeightsMeans;
+	vks::Buffer adamWeightsVariances;
+	vks::Buffer adamBiasesMeans;
+	vks::Buffer adamBiasesVariances;
+
 
 	// Resources for the graphics part of the example
 	struct Graphics {
@@ -94,6 +99,9 @@ public:
 
 			textureColorMap.destroy();
 			storageImage.destroy();
+
+			weights.destroy();
+			Biases.destroy();
 		}
 	}
 
@@ -181,6 +189,95 @@ public:
 		storageImage.descriptor.imageView = storageImage.view;
 		storageImage.descriptor.sampler = storageImage.sampler;
 		storageImage.device = vulkanDevice;
+	}
+
+	void prepareBuffers()
+	{
+		//create weights buffer
+
+		int mMaxWeightsCount = (MAX_LAYERS - 1) * MAX_NEURONS_PER_LAYER * MAX_NEURONS_PER_LAYER;
+		std::vector<float> a, b;
+		for (int i = 0; i < mMaxWeightsCount; i++)
+			a.push_back(0.0f);
+
+
+		VkDeviceSize weightsBufferSize = mMaxWeightsCount * sizeof(float);
+
+
+
+		vks::Buffer stagingBuffer;
+
+		vulkanDevice->createBuffer(
+			VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			&stagingBuffer,
+			weightsBufferSize,
+			a.data());
+
+		vulkanDevice->createBuffer(
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			&weights,
+			weightsBufferSize);
+
+		vulkanDevice->createBuffer(
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT ,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			&gradientWeights,
+			weightsBufferSize);
+
+		// Copy from staging buffer
+		VkCommandBuffer copyCmd = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
+		VkBufferCopy copyRegion = {};
+		copyRegion.size = mMaxWeightsCount;
+		vkCmdCopyBuffer(copyCmd, stagingBuffer.buffer, weights.buffer, 1, &copyRegion);
+		vkCmdCopyBuffer(copyCmd, stagingBuffer.buffer, gradientWeights.buffer, 1, &copyRegion);
+
+		// Add an initial release barrier to the graphics queue,
+		// so that when the compute command buffer executes for the first time
+		// it doesn't complain about a lack of a corresponding "release" to its "acquire"
+		//addGraphicsToComputeBarriers(copyCmd, VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT, 0, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+		vulkanDevice->flushCommandBuffer(copyCmd, queue, true);
+
+		stagingBuffer.destroy();
+
+		//crate biases buffer
+		int mMaxBiasesCount = (MAX_LAYERS - 1) * MAX_NEURONS_PER_LAYER;
+		for (int i = 0; i < mMaxWeightsCount; i++)
+			b.push_back(0.0f);
+		VkDeviceSize biasesBufferSize = mMaxBiasesCount * sizeof(float);
+		vulkanDevice->createBuffer(
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			&Biases,
+			biasesBufferSize);
+		vulkanDevice->createBuffer(
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			&gradientBiases,
+			biasesBufferSize);
+
+		// Create buffers for Adam optimizer
+		vulkanDevice->createBuffer(
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			&adamWeightsMeans,
+			weightsBufferSize);
+		vulkanDevice->createBuffer(
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			&adamWeightsVariances,
+			weightsBufferSize);
+		vulkanDevice->createBuffer(
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			&adamBiasesMeans,
+			biasesBufferSize);
+		vulkanDevice->createBuffer(
+			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			&adamBiasesVariances,
+			biasesBufferSize);
 	}
 
 	void loadAssets()
@@ -281,6 +378,11 @@ public:
 
 		vkCmdDispatch(compute.commandBuffer, storageImage.width / 16, storageImage.height / 16, 1);
 
+		//vkCmdBindPipeline(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelines[compute.pipelineIndex + 1]);
+		//vkCmdBindDescriptorSets(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelineLayout, 0, 1, &compute.descriptorSet, 0, 0);
+
+		//vkCmdDispatch(compute.commandBuffer, storageImage.width / 16, storageImage.height / 16, 1);
+
 		vkEndCommandBuffer(compute.commandBuffer);
 	}
 
@@ -333,8 +435,10 @@ public:
 			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2),
 			// Compute pipelines uses a storage image for image reads and writes
 			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2),
+			// Compute pipllines
+			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8),
 		};
-		VkDescriptorPoolCreateInfo descriptorPoolInfo = vks::initializers::descriptorPoolCreateInfo(poolSizes, 3);
+		VkDescriptorPoolCreateInfo descriptorPoolInfo = vks::initializers::descriptorPoolCreateInfo(poolSizes, 4);
 		VK_CHECK_RESULT(vkCreateDescriptorPool(device, &descriptorPoolInfo, nullptr, &descriptorPool));
 	}
 
@@ -402,8 +506,8 @@ public:
 		std::array<VkPipelineShaderStageCreateInfo, 2> shaderStages;
 
 		// Shaders
-		shaderStages[0] = loadShader(getShadersPath() + "computeshader/texture.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
-		shaderStages[1] = loadShader(getShadersPath() + "computeshader/texture.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
+		shaderStages[0] = loadShader(getShadersPath() + "mlp/texture.vert.spv", VK_SHADER_STAGE_VERTEX_BIT);
+		shaderStages[1] = loadShader(getShadersPath() + "mlp/texture.frag.spv", VK_SHADER_STAGE_FRAGMENT_BIT);
 
 		// Vertex input state
 		std::vector<VkVertexInputBindingDescription> vertexInputBindings = {
@@ -446,6 +550,17 @@ public:
 			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT, 0),
 			// Binding 1: Output image (write)
 			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_SHADER_STAGE_COMPUTE_BIT, 1),
+
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 2),
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 3),
+
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 4),
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 5),
+
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 6),
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 7),
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 8),
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 9),
 		};
 
 		VkDescriptorSetLayoutCreateInfo descriptorLayout = vks::initializers::descriptorSetLayoutCreateInfo(setLayoutBindings);
@@ -456,9 +571,22 @@ public:
 
 		VkDescriptorSetAllocateInfo allocInfo = vks::initializers::descriptorSetAllocateInfo(descriptorPool, &compute.descriptorSetLayout, 1);
 		VK_CHECK_RESULT(vkAllocateDescriptorSets(device, &allocInfo, &compute.descriptorSet));
+
 		std::vector<VkWriteDescriptorSet> computeWriteDescriptorSets = {
 			vks::initializers::writeDescriptorSet(compute.descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 0, &textureColorMap.descriptor),
-			vks::initializers::writeDescriptorSet(compute.descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, &storageImage.descriptor)
+			vks::initializers::writeDescriptorSet(compute.descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, &storageImage.descriptor),
+
+			vks::initializers::writeDescriptorSet(compute.descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2, &weights.descriptor),
+			vks::initializers::writeDescriptorSet(compute.descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3, &Biases.descriptor),
+
+			vks::initializers::writeDescriptorSet(compute.descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4, &gradientBiases.descriptor),
+			vks::initializers::writeDescriptorSet(compute.descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 5, &gradientWeights.descriptor),
+
+			vks::initializers::writeDescriptorSet(compute.descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6, &adamBiasesMeans.descriptor),
+			vks::initializers::writeDescriptorSet(compute.descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7, &adamBiasesVariances.descriptor),
+			vks::initializers::writeDescriptorSet(compute.descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8, &adamWeightsMeans.descriptor),
+			vks::initializers::writeDescriptorSet(compute.descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 9, &adamWeightsVariances.descriptor)
+
 		};
 		vkUpdateDescriptorSets(device, static_cast<uint32_t>(computeWriteDescriptorSets.size()), computeWriteDescriptorSets.data(), 0, nullptr);
 
@@ -466,9 +594,9 @@ public:
 		VkComputePipelineCreateInfo computePipelineCreateInfo = vks::initializers::computePipelineCreateInfo(compute.pipelineLayout, 0);
 
 		// One pipeline for each available image filter
-		filterNames = { "emboss", "edgedetect", "sharpen" };
+		filterNames = { "emboss"};
 		for (auto& shaderName : filterNames) {
-			std::string fileName = getShadersPath() + "computeshader/" + shaderName + ".comp.spv";
+			std::string fileName = getShadersPath() + "mlp/" + shaderName + ".comp.spv";
 			computePipelineCreateInfo.stage = loadShader(fileName, VK_SHADER_STAGE_COMPUTE_BIT);
 			VkPipeline pipeline;
 			VK_CHECK_RESULT(vkCreateComputePipelines(device, pipelineCache, 1, &computePipelineCreateInfo, nullptr, &pipeline));
@@ -518,9 +646,10 @@ public:
 		generateQuad();
 		prepareUniformBuffers();
 		prepareStorageImage();
+		prepareBuffers();
 		setupDescriptorPool();
-		prepareGraphics();
 		prepareCompute();
+		prepareGraphics();
 		buildCommandBuffers();
 		prepared = true;
 	}
@@ -571,11 +700,7 @@ public:
 
 	virtual void OnUpdateUIOverlay(vks::UIOverlay *overlay)
 	{
-		if (overlay->header("Settings")) {
-			if (overlay->comboBox("Shader", &compute.pipelineIndex, filterNames)) {
-				buildComputeCommandBuffer();
-			}
-		}
+
 	}
 };
 
