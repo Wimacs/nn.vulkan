@@ -8,6 +8,8 @@
 
 #include "vulkanexamplebase.h"
 
+#include <thread>
+
 #if defined(VK_EXAMPLE_XCODE_GENERATED)
 #if (defined(VK_USE_PLATFORM_MACOS_MVK) || defined(VK_USE_PLATFORM_METAL_EXT))
 #include <Cocoa/Cocoa.h>
@@ -22,6 +24,21 @@ extern CAMetalLayer* layer;
 #endif
 
 std::vector<const char*> VulkanExampleBase::args;
+
+void QuickSleep(float milliseconds)
+{
+	const std::chrono::high_resolution_clock::time_point t1 = std::chrono::high_resolution_clock::now();
+	const double seconds = double(milliseconds) / 1000.0;
+	const int sleep_millisec_accuracy = 1;
+	const double sleep_sec_accuracy = double(sleep_millisec_accuracy) / 1000.0;
+	while (std::chrono::duration_cast<std::chrono::duration<double>>(std::chrono::high_resolution_clock::now() - t1).count() < seconds)
+	{
+		if (seconds - (std::chrono::high_resolution_clock::now() - t1).count() > sleep_sec_accuracy)
+		{
+			std::this_thread::sleep_for(std::chrono::milliseconds(sleep_millisec_accuracy));
+		}
+	}
+}
 
 VkResult VulkanExampleBase::createInstance()
 {
@@ -259,6 +276,22 @@ void VulkanExampleBase::nextFrame()
 	auto tDiff = std::chrono::duration<double, std::milli>(tEnd - tStart).count();
 #endif
 	frameTimer = (float)tDiff / 1000.0f;
+
+	if (frameTimer < 1.0f / 60.0f)
+	{
+		QuickSleep((1.0f / 165.0f - frameTimer) * 1000 );
+		//frameTimer += float(std::max(0.0, timer.record_elapsed_seconds()));
+	}
+	tEnd = std::chrono::high_resolution_clock::now();
+#if (defined(VK_USE_PLATFORM_IOS_MVK) || defined(VK_USE_PLATFORM_MACOS_MVK) || defined(VK_USE_PLATFORM_METAL_EXT)) && !defined(VK_EXAMPLE_XCODE_GENERATED)
+	// SRS - Calculate tDiff as time between frames vs. rendering time for iOS/macOS displayLink-driven examples project
+	 tDiff = std::chrono::duration<double, std::milli>(tEnd - tPrevEnd).count();
+#else
+	 tDiff = std::chrono::duration<double, std::milli>(tEnd - tStart).count();
+#endif
+
+	frameTimer = (float)tDiff / 1000.0f;
+
 	camera.update(frameTimer);
 	if (camera.moving())
 	{
