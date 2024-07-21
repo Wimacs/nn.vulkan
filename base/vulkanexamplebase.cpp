@@ -367,6 +367,7 @@ void VulkanExampleBase::renderLoop()
 		}
 		if (prepared && !IsIconic(window)) {
 			nextFrame();
+			frameCounter++;
 		}
 	}
 #elif defined(VK_USE_PLATFORM_ANDROID_KHR)

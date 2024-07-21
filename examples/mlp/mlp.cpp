@@ -1,13 +1,38 @@
 #include "vulkanexamplebase.h"
 
 #define MAX_NEURONS_PER_LAYER 64
-#define MAX_LAYERS 5
+#define LAYER_COUNT 4
 
 // Vertex layout for this example
 struct Vertex {
 	float pos[3];
 	float uv[2];
 };
+
+struct NNData
+{
+	uint32_t frameNumber;
+	uint32_t outputWidth;
+	uint32_t outputHeight;
+	float learningRate;
+
+	float rcpBatchSize;
+	uint32_t batchSize;
+	float adamBeta1;
+	float adamBeta2;
+
+	float adamEpsilon;
+	float adamBeta1T;
+	float adamBeta2T;
+	uint32_t frequencies;
+
+	uint32_t layerCount;
+}g_data;
+
+uint32_t divRoundUp(uint32_t x, uint32_t div)
+{
+	return (x + div - 1) / div;
+}
 
 class VulkanExample : public VulkanExampleBase
 {
@@ -27,6 +52,12 @@ public:
 	vks::Buffer adamWeightsVariances;
 	vks::Buffer adamBiasesMeans;
 	vks::Buffer adamBiasesVariances;
+
+	vks::Buffer neuronsPerLayerDevice;
+	vks::Buffer connectionDataBaseOffsetsDevice;
+	vks::Buffer neuronDataBaseOffsetsDevice;
+
+	vks::Buffer  nnuniformData;
 
 
 	// Resources for the graphics part of the example
@@ -99,6 +130,7 @@ public:
 
 			textureColorMap.destroy();
 			storageImage.destroy();
+			nnuniformData.destroy();
 
 			weights.destroy();
 			Biases.destroy();
@@ -195,24 +227,24 @@ public:
 	{
 		//create weights buffer
 
-		int mMaxWeightsCount = (MAX_LAYERS - 1) * MAX_NEURONS_PER_LAYER * MAX_NEURONS_PER_LAYER;
-		std::vector<float> a, b;
-		for (int i = 0; i < mMaxWeightsCount; i++)
-			a.push_back(0.0f);
+		int mMaxWeightsCount = (LAYER_COUNT - 1) * MAX_NEURONS_PER_LAYER * MAX_NEURONS_PER_LAYER;
+		//std::vector<float> a, b;
+		//for (int i = 0; i < mMaxWeightsCount; i++)
+		//	a.push_back(0.0f);
 
 
 		VkDeviceSize weightsBufferSize = mMaxWeightsCount * sizeof(float);
 
 
 
-		vks::Buffer stagingBuffer;
+		//vks::Buffer stagingBuffer;
 
-		vulkanDevice->createBuffer(
-			VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-			&stagingBuffer,
-			weightsBufferSize,
-			a.data());
+		//vulkanDevice->createBuffer(
+		//	VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		//	VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		//	&stagingBuffer,
+		//	weightsBufferSize,
+		//	a.data());
 
 		vulkanDevice->createBuffer(
 			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -226,25 +258,23 @@ public:
 			&gradientWeights,
 			weightsBufferSize);
 
-		// Copy from staging buffer
-		VkCommandBuffer copyCmd = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
-		VkBufferCopy copyRegion = {};
-		copyRegion.size = mMaxWeightsCount;
-		vkCmdCopyBuffer(copyCmd, stagingBuffer.buffer, weights.buffer, 1, &copyRegion);
-		vkCmdCopyBuffer(copyCmd, stagingBuffer.buffer, gradientWeights.buffer, 1, &copyRegion);
+		//// Copy from staging buffer
+		//VkCommandBuffer copyCmd = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
+		//VkBufferCopy copyRegion = {};
+		//copyRegion.size = mMaxWeightsCount;
+		//vkCmdCopyBuffer(copyCmd, stagingBuffer.buffer, weights.buffer, 1, &copyRegion);
+		//vkCmdCopyBuffer(copyCmd, stagingBuffer.buffer, gradientWeights.buffer, 1, &copyRegion);
 
-		// Add an initial release barrier to the graphics queue,
-		// so that when the compute command buffer executes for the first time
-		// it doesn't complain about a lack of a corresponding "release" to its "acquire"
-		//addGraphicsToComputeBarriers(copyCmd, VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT, 0, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
-		vulkanDevice->flushCommandBuffer(copyCmd, queue, true);
+		//// Add an initial release barrier to the graphics queue,
+		//// so that when the compute command buffer executes for the first time
+		//// it doesn't complain about a lack of a corresponding "release" to its "acquire"
+		////addGraphicsToComputeBarriers(copyCmd, VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT, 0, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+		//vulkanDevice->flushCommandBuffer(copyCmd, queue, true);
 
-		stagingBuffer.destroy();
+		//stagingBuffer.destroy();
 
 		//crate biases buffer
-		int mMaxBiasesCount = (MAX_LAYERS - 1) * MAX_NEURONS_PER_LAYER;
-		for (int i = 0; i < mMaxWeightsCount; i++)
-			b.push_back(0.0f);
+		int mMaxBiasesCount = (LAYER_COUNT - 1) * MAX_NEURONS_PER_LAYER;
 		VkDeviceSize biasesBufferSize = mMaxBiasesCount * sizeof(float);
 		vulkanDevice->createBuffer(
 			VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -278,6 +308,128 @@ public:
 			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 			&adamBiasesVariances,
 			biasesBufferSize);
+
+		VK_CHECK_RESULT(vulkanDevice->createBuffer(
+			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			&nnuniformData,
+			sizeof(NNData)));
+
+		VK_CHECK_RESULT(nnuniformData.map());
+		updateUniformBuffer();
+
+		vulkanDevice->createBuffer(
+			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			&neuronsPerLayerDevice,
+			LAYER_COUNT * sizeof(float));
+
+		vulkanDevice->createBuffer(
+			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			&connectionDataBaseOffsetsDevice,
+			LAYER_COUNT * sizeof(float));
+
+		vulkanDevice->createBuffer(
+			VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			&neuronDataBaseOffsetsDevice,
+			LAYER_COUNT * sizeof(float));
+
+		updateNNArch();
+	}
+
+	void updateNNArch()
+	{
+
+		int neuronsPerLayer[LAYER_COUNT];
+		// Figure out number of neurons per layer
+		{
+			neuronsPerLayer[0] = 2 /*getInputLayerNeuronCount()*/;
+			neuronsPerLayer[LAYER_COUNT - 1] = 3; //RGB output
+			for (int i = 1; i < LAYER_COUNT - 1; i++)
+			{
+				neuronsPerLayer[i] = MAX_NEURONS_PER_LAYER;
+			}
+		}
+		{
+			vks::Buffer stagingBuffer;
+			std::vector<uint32_t> neuronsPerLayerHost;
+			for (int i = 0; i < LAYER_COUNT; i++)
+			{
+				neuronsPerLayerHost.push_back(neuronsPerLayer[i]);
+			}
+			vulkanDevice->createBuffer(
+				VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+				&stagingBuffer,
+				LAYER_COUNT * sizeof(float),
+				neuronsPerLayerHost.data());
+
+			// Copy from staging buffer
+			VkCommandBuffer copyCmd = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
+			VkBufferCopy copyRegion = {};
+			copyRegion.size = LAYER_COUNT * sizeof(float);
+			vkCmdCopyBuffer(copyCmd, stagingBuffer.buffer, neuronsPerLayerDevice.buffer, 1, &copyRegion);
+			vulkanDevice->flushCommandBuffer(copyCmd, queue, true);
+			stagingBuffer.destroy();
+		}
+		{
+			glm::uint offset = 0;
+			vks::Buffer stagingBuffer;
+			std::vector<uint32_t> connectionDataBaseOffsetsHost;
+			connectionDataBaseOffsetsHost.push_back(0);
+			for (int i = 1; i < LAYER_COUNT; i++)
+			{
+				connectionDataBaseOffsetsHost.push_back(offset);
+				offset += neuronsPerLayer[i - 1] * neuronsPerLayer[i];
+			}
+			vulkanDevice->createBuffer(
+				VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+				&stagingBuffer,
+				LAYER_COUNT * sizeof(float),
+				connectionDataBaseOffsetsHost.data());
+
+			// Copy from staging buffer
+			VkCommandBuffer copyCmd = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
+			VkBufferCopy copyRegion = {};
+			copyRegion.size = LAYER_COUNT * sizeof(float);
+			vkCmdCopyBuffer(copyCmd, stagingBuffer.buffer, connectionDataBaseOffsetsDevice.buffer, 1, &copyRegion);
+			vulkanDevice->flushCommandBuffer(copyCmd, queue, true);
+			stagingBuffer.destroy();
+		}
+		{
+			glm::uint offset = 0;
+			vks::Buffer stagingBuffer;
+			std::vector<uint32_t> neuronDataBaseOffsetsHost;
+			for (int i = 0; i < LAYER_COUNT; i++)
+			{
+				neuronDataBaseOffsetsHost.push_back(offset);
+				offset += neuronsPerLayer[i];
+			}
+			vulkanDevice->createBuffer(
+				VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+				VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+				&stagingBuffer,
+				LAYER_COUNT * sizeof(float),
+				neuronDataBaseOffsetsHost.data());
+
+			// Copy from staging buffer
+			VkCommandBuffer copyCmd = vulkanDevice->createCommandBuffer(VK_COMMAND_BUFFER_LEVEL_PRIMARY, true);
+			VkBufferCopy copyRegion = {};
+			copyRegion.size = LAYER_COUNT * sizeof(float);
+			vkCmdCopyBuffer(copyCmd, stagingBuffer.buffer, neuronDataBaseOffsetsDevice.buffer, 1, &copyRegion);
+			vulkanDevice->flushCommandBuffer(copyCmd, queue, true);
+			stagingBuffer.destroy();
+		}
+	}
+
+	void updateUniformBuffer()
+	{
+		g_data.frameNumber = frameCounter;
+		g_data.layerCount = LAYER_COUNT;
+		memcpy(nnuniformData.mapped, &g_data, sizeof(NNData));
 	}
 
 	void loadAssets()
@@ -376,7 +528,10 @@ public:
 		vkCmdBindPipeline(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelines[compute.pipelineIndex]);
 		vkCmdBindDescriptorSets(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelineLayout, 0, 1, &compute.descriptorSet, 0, 0);
 
-		vkCmdDispatch(compute.commandBuffer, storageImage.width / 16, storageImage.height / 16, 1);
+		const uint32_t dispatchWidth = divRoundUp(LAYER_COUNT, 16);
+		const uint32_t dispatchHeight = divRoundUp(MAX_NEURONS_PER_LAYER, 16);
+
+		vkCmdDispatch(compute.commandBuffer, dispatchWidth, dispatchHeight, 1);
 
 		//vkCmdBindPipeline(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelines[compute.pipelineIndex + 1]);
 		//vkCmdBindDescriptorSets(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelineLayout, 0, 1, &compute.descriptorSet, 0, 0);
@@ -430,7 +585,7 @@ public:
 	{
 		std::vector<VkDescriptorPoolSize> poolSizes = {
 			// Graphics pipelines uniform buffers
-			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2),
+			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 6),
 			// Graphics pipelines image samplers for displaying compute output image
 			vks::initializers::descriptorPoolSize(VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2),
 			// Compute pipelines uses a storage image for image reads and writes
@@ -561,6 +716,12 @@ public:
 			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 7),
 			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 8),
 			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 9),
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 10),
+
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 11),
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 12),
+			vks::initializers::descriptorSetLayoutBinding(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_SHADER_STAGE_COMPUTE_BIT, 13),
+
 		};
 
 		VkDescriptorSetLayoutCreateInfo descriptorLayout = vks::initializers::descriptorSetLayoutCreateInfo(setLayoutBindings);
@@ -585,8 +746,12 @@ public:
 			vks::initializers::writeDescriptorSet(compute.descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6, &adamBiasesMeans.descriptor),
 			vks::initializers::writeDescriptorSet(compute.descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7, &adamBiasesVariances.descriptor),
 			vks::initializers::writeDescriptorSet(compute.descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8, &adamWeightsMeans.descriptor),
-			vks::initializers::writeDescriptorSet(compute.descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 9, &adamWeightsVariances.descriptor)
+			vks::initializers::writeDescriptorSet(compute.descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 9, &adamWeightsVariances.descriptor),
+			vks::initializers::writeDescriptorSet(compute.descriptorSet, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 10, &nnuniformData.descriptor),
 
+			vks::initializers::writeDescriptorSet(compute.descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 11, &neuronsPerLayerDevice.descriptor),
+			vks::initializers::writeDescriptorSet(compute.descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 12, &connectionDataBaseOffsetsDevice.descriptor),
+			vks::initializers::writeDescriptorSet(compute.descriptorSet, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 13, &neuronDataBaseOffsetsDevice.descriptor),
 		};
 		vkUpdateDescriptorSets(device, static_cast<uint32_t>(computeWriteDescriptorSets.size()), computeWriteDescriptorSets.data(), 0, nullptr);
 
@@ -594,7 +759,7 @@ public:
 		VkComputePipelineCreateInfo computePipelineCreateInfo = vks::initializers::computePipelineCreateInfo(compute.pipelineLayout, 0);
 
 		// One pipeline for each available image filter
-		filterNames = { "emboss"};
+		filterNames = { "nninit"};
 		for (auto& shaderName : filterNames) {
 			std::string fileName = getShadersPath() + "mlp/" + shaderName + ".comp.spv";
 			computePipelineCreateInfo.stage = loadShader(fileName, VK_SHADER_STAGE_COMPUTE_BIT);
@@ -695,6 +860,7 @@ public:
 			return;
 		}
 		updateUniformBuffers();
+		updateUniformBuffer();
 		draw();
 	}
 
