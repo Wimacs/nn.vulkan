@@ -59,6 +59,7 @@ public:
 
 	vks::Buffer  nnuniformData;
 
+	bool mNNNeedsInitialization = true;
 
 	// Resources for the graphics part of the example
 	struct Graphics {
@@ -429,6 +430,8 @@ public:
 	{
 		g_data.frameNumber = frameCounter;
 		g_data.layerCount = LAYER_COUNT;
+		g_data.outputHeight = textureColorMap.height;
+		g_data.outputWidth = textureColorMap.width;
 		memcpy(nnuniformData.mapped, &g_data, sizeof(NNData));
 	}
 
@@ -525,20 +528,33 @@ public:
 
 		VK_CHECK_RESULT(vkBeginCommandBuffer(compute.commandBuffer, &cmdBufInfo));
 
-		vkCmdBindPipeline(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelines[compute.pipelineIndex]);
-		vkCmdBindDescriptorSets(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelineLayout, 0, 1, &compute.descriptorSet, 0, 0);
 
-		const uint32_t dispatchWidth = divRoundUp(LAYER_COUNT, 16);
-		const uint32_t dispatchHeight = divRoundUp(MAX_NEURONS_PER_LAYER, 16);
+		//nn init
+		if (mNNNeedsInitialization)
+		{
+			mNNNeedsInitialization = false;
+			vkCmdBindPipeline(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelines[compute.pipelineIndex]);
+			vkCmdBindDescriptorSets(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelineLayout, 0, 1, &compute.descriptorSet, 0, 0);
 
-		vkCmdDispatch(compute.commandBuffer, dispatchWidth, dispatchHeight, 1);
+			const uint32_t dispatchWidth = divRoundUp(LAYER_COUNT, 16);
+			const uint32_t dispatchHeight = divRoundUp(MAX_NEURONS_PER_LAYER, 16);
 
-		//vkCmdBindPipeline(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelines[compute.pipelineIndex + 1]);
-		//vkCmdBindDescriptorSets(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelineLayout, 0, 1, &compute.descriptorSet, 0, 0);
+			vkCmdDispatch(compute.commandBuffer, dispatchWidth, dispatchHeight, 1);
+		}
 
-		//vkCmdDispatch(compute.commandBuffer, storageImage.width / 16, storageImage.height / 16, 1);
+		//nn inference
+		{
+			vkCmdBindPipeline(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelines[compute.pipelineIndex + 1]);
+			vkCmdBindDescriptorSets(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelineLayout, 0, 1, &compute.descriptorSet, 0, 0);
+
+			const uint32_t dispatchWidth = divRoundUp(textureColorMap.width, 8);
+			const uint32_t dispatchHeight = divRoundUp(textureColorMap.height, 8);
+
+			vkCmdDispatch(compute.commandBuffer, dispatchWidth, dispatchHeight, 1);
+		}
 
 		vkEndCommandBuffer(compute.commandBuffer);
+
 	}
 
 	// Setup vertices for a single uv-mapped quad used to display the input and output images
@@ -759,7 +775,7 @@ public:
 		VkComputePipelineCreateInfo computePipelineCreateInfo = vks::initializers::computePipelineCreateInfo(compute.pipelineLayout, 0);
 
 		// One pipeline for each available image filter
-		filterNames = { "nninit"};
+		filterNames = { "nninit", "nninference"};
 		for (auto& shaderName : filterNames) {
 			std::string fileName = getShadersPath() + "mlp/" + shaderName + ".comp.spv";
 			computePipelineCreateInfo.stage = loadShader(fileName, VK_SHADER_STAGE_COMPUTE_BIT);
@@ -866,7 +882,10 @@ public:
 
 	virtual void OnUpdateUIOverlay(vks::UIOverlay *overlay)
 	{
-
+		if (ImGui::Button("Initialize Weights"))
+		{
+			mNNNeedsInitialization = true;
+		}
 	}
 };
 
