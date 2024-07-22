@@ -44,28 +44,28 @@ for root, dirs, files in os.walk(dir_path):
             profile = ''
             additional_exts = ''
             if(hlsl_file.find('.vert') != -1):
-                profile = 'vs_6_1'
+                profile = 'vs_6_6'
             elif(hlsl_file.find('.frag') != -1):
-                profile = 'ps_6_4'
+                profile = 'ps_6_6'
             elif(hlsl_file.find('.comp') != -1):
-                profile = 'cs_6_1'
+                profile = 'cs_6_6'
             elif(hlsl_file.find('.geom') != -1):
-                profile = 'gs_6_1'
+                profile = 'gs_6_6'
             elif(hlsl_file.find('.tesc') != -1):
-                profile = 'hs_6_1'
+                profile = 'hs_6_6'
             elif(hlsl_file.find('.tese') != -1):
-                profile = 'ds_6_1'
+                profile = 'ds_6_6'
             elif(hlsl_file.find('.rgen') != -1 or
 				hlsl_file.find('.rchit') != -1 or
 				hlsl_file.find('.rmiss') != -1):
-                target='-fspv-target-env=vulkan1.2'
+                target='-fspv-target-env=vulkan1.3'
                 profile = 'lib_6_3'
             elif(hlsl_file.find('.mesh') != -1):
-                target='-fspv-target-env=vulkan1.2'
+                target='-fspv-target-env=vulkan1.3'
                 additional_exts = '-fspv-extension=SPV_EXT_mesh_shader'
                 profile = 'ms_6_6'                
             elif(hlsl_file.find('.task') != -1):
-                target='-fspv-target-env=vulkan1.2'
+                target='-fspv-target-env=vulkan1.3'
                 additional_exts = '-fspv-extension=SPV_EXT_mesh_shader'
                 profile = 'as_6_6'                  
 

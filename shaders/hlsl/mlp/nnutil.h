@@ -107,3 +107,14 @@ float sigmoidDeriv(float x)
 {
     return x * (1.0f - x);
 }
+
+#define FLOAT_PACKING_CONSTANT 1000000.0f
+int packFloat(float x)
+{
+    return int(x * FLOAT_PACKING_CONSTANT);
+}
+
+float unpackFloat(int x)
+{
+    return float(x) / FLOAT_PACKING_CONSTANT;
+}

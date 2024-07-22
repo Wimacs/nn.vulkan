@@ -279,7 +279,7 @@ void VulkanExampleBase::nextFrame()
 
 	if (frameTimer < 1.0f / 60.0f)
 	{
-		QuickSleep((1.0f / 165.0f - frameTimer) * 1000 );
+		//QuickSleep((1.0f / 165.0f - frameTimer) * 1000 );
 		//frameTimer += float(std::max(0.0, timer.record_elapsed_seconds()));
 	}
 	tEnd = std::chrono::high_resolution_clock::now();

@@ -3,7 +3,7 @@
 Texture2D inputImage : register(t0);
 RWTexture2D<float4> resultImage : register(u1);
 RWStructuredBuffer<float> weights : register(u2);
-RWStructuredBuffer<float> biases : register(u3);
+RWStructuredBuffer<float> Biases : register(u3);
 RWStructuredBuffer<float> gradientWeights : register(u4);
 RWStructuredBuffer<float> gradientBiases : register(u5);
 RWStructuredBuffer<float> adamWeightsMeans : register(u6);
@@ -37,33 +37,20 @@ void main(
     const uint neuron = LaunchIndex.y;
     if (layer >= LAYER_COUNT)
         return;
-
-    uint neuronCountCurrentLayer = neuronsPerLayer[layer];
-    uint neuronCountPreviousLayer = neuronsPerLayer[layer - 1];
-
+    
+    const uint neuronCountCurrentLayer = neuronsPerLayer[layer];
+    const uint neuronCountPreviousLayer = neuronsPerLayer[layer - 1];
     if (neuron >= neuronCountCurrentLayer)
         return;
     
-    // Initialize bias value to zero
+    // Clear bias value
     const uint neuronDataIndex = getNeuronDataIndex(layer, neuron);
-    biases[neuronDataIndex] = 0.0f;
+    gradientBiases[neuronDataIndex] = 0.0f;
 
-    // Initialize Adam optimizer biases data (mean & variance)
-    adamBiasesMeans[neuronDataIndex] = 0.0f;
-    adamBiasesVariances[neuronDataIndex] = 0.0f;
-    
-    uint rng = initRNG(LaunchIndex, uint2(LAYER_COUNT, neuronCountCurrentLayer), globalinfo.frameNumber);
-    const float xavierWeightScale = xavierUniformScale(rng, neuronCountPreviousLayer, neuronCountCurrentLayer);
-    
-    // Initialize weights leading to this neuron
+    // Clear weights leading to this neuron
     for (uint previousNeuron = 0; previousNeuron < neuronCountPreviousLayer; previousNeuron++)
     {
-        const float initialWeight = randInRange(rng, xavierWeightScale);
         const uint weightIndex = getConnectionDataIndex(layer, previousNeuron, neuron);
-        weights[weightIndex] = initialWeight;
-        
-        // Initialize Adam optimizer weights data (mean & variance)
-        adamWeightsMeans[weightIndex] = 0.0f;
-        adamWeightsVariances[weightIndex] = 0.0f;
+        gradientWeights[weightIndex] = 0.0f;
     }
 }

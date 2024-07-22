@@ -82,6 +82,7 @@ public:
 		VkQueue queue{ VK_NULL_HANDLE };								// Separate queue for compute commands (queue family may differ from the one used for graphics)
 		VkCommandPool commandPool{ VK_NULL_HANDLE };					// Use a separate command pool (queue family may differ from the one used for graphics)
 		VkCommandBuffer commandBuffer{ VK_NULL_HANDLE };				// Command buffer storing the dispatch commands and barriers
+		VkCommandBuffer initnnCommandBuffer{ VK_NULL_HANDLE };
 		VkSemaphore semaphore{ VK_NULL_HANDLE };						// Execution dependency between compute & graphic submission
 		VkDescriptorSetLayout descriptorSetLayout{ VK_NULL_HANDLE };	// Compute shader binding layout
 		VkDescriptorSet descriptorSet{ VK_NULL_HANDLE };				// Compute shader bindings
@@ -432,6 +433,10 @@ public:
 		g_data.layerCount = LAYER_COUNT;
 		g_data.outputHeight = textureColorMap.height;
 		g_data.outputWidth = textureColorMap.width;
+		g_data.batchSize = 4096;
+		g_data.rcpBatchSize = 1.0f / g_data.batchSize;
+		g_data.learningRate = 0.01f;
+
 		memcpy(nnuniformData.mapped, &g_data, sizeof(NNData));
 	}
 
@@ -521,39 +526,82 @@ public:
 
 	void buildComputeCommandBuffer()
 	{
-		// Flush the queue if we're rebuilding the command buffer after a pipeline change to ensure it's not currently in use
-		vkQueueWaitIdle(compute.queue);
-
-		VkCommandBufferBeginInfo cmdBufInfo = vks::initializers::commandBufferBeginInfo();
-
-		VK_CHECK_RESULT(vkBeginCommandBuffer(compute.commandBuffer, &cmdBufInfo));
 
 
 		//nn init
-		if (mNNNeedsInitialization)
+		//if (mNNNeedsInitialization)
 		{
+			// Flush the queue if we're rebuilding the command buffer after a pipeline change to ensure it's not currently in use
+			vkQueueWaitIdle(compute.queue);
+
+			VkCommandBufferBeginInfo cmdBufInfo = vks::initializers::commandBufferBeginInfo();
+
+			VK_CHECK_RESULT(vkBeginCommandBuffer(compute.initnnCommandBuffer, &cmdBufInfo));
+
 			mNNNeedsInitialization = false;
-			vkCmdBindPipeline(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelines[compute.pipelineIndex]);
-			vkCmdBindDescriptorSets(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelineLayout, 0, 1, &compute.descriptorSet, 0, 0);
+			vkCmdBindPipeline(compute.initnnCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelines[compute.pipelineIndex]);
+			vkCmdBindDescriptorSets(compute.initnnCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelineLayout, 0, 1, &compute.descriptorSet, 0, 0);
 
 			const uint32_t dispatchWidth = divRoundUp(LAYER_COUNT, 16);
 			const uint32_t dispatchHeight = divRoundUp(MAX_NEURONS_PER_LAYER, 16);
 
-			vkCmdDispatch(compute.commandBuffer, dispatchWidth, dispatchHeight, 1);
+			vkCmdDispatch(compute.initnnCommandBuffer, dispatchWidth, dispatchHeight, 1);
+
+			vkEndCommandBuffer(compute.initnnCommandBuffer);
 		}
 
-		//nn inference
+
+
+		//nn traning + inference
 		{
-			vkCmdBindPipeline(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelines[compute.pipelineIndex + 1]);
-			vkCmdBindDescriptorSets(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelineLayout, 0, 1, &compute.descriptorSet, 0, 0);
+			vkQueueWaitIdle(compute.queue);
 
-			const uint32_t dispatchWidth = divRoundUp(textureColorMap.width, 8);
-			const uint32_t dispatchHeight = divRoundUp(textureColorMap.height, 8);
+			VkCommandBufferBeginInfo cmdBufInfo = vks::initializers::commandBufferBeginInfo();
+			VK_CHECK_RESULT(vkBeginCommandBuffer(compute.commandBuffer, &cmdBufInfo));
 
-			vkCmdDispatch(compute.commandBuffer, dispatchWidth, dispatchHeight, 1);
+			{
+				vkCmdBindPipeline(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelines[compute.pipelineIndex + 2]);
+				vkCmdBindDescriptorSets(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelineLayout, 0, 1, &compute.descriptorSet, 0, 0);
+
+				const uint32_t dispatchWidth = divRoundUp(LAYER_COUNT, 16);
+				const uint32_t dispatchHeight = divRoundUp(MAX_NEURONS_PER_LAYER, 16);
+
+				vkCmdDispatch(compute.commandBuffer, dispatchWidth, dispatchHeight, 1);
+			}
+
+			{
+				vkCmdBindPipeline(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelines[compute.pipelineIndex + 3]);
+				//vkCmdBindDescriptorSets(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelineLayout, 0, 1, &compute.descriptorSet, 0, 0);
+
+				const uint32_t dispatchWidth = divRoundUp(g_data.batchSize, 8);
+				vkCmdDispatch(compute.commandBuffer, dispatchWidth, 1, 1);
+			}
+
+			{
+				vkCmdBindPipeline(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelines[compute.pipelineIndex + 4]);
+				//vkCmdBindDescriptorSets(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelineLayout, 0, 1, &compute.descriptorSet, 0, 0);
+
+				const uint32_t dispatchWidth = divRoundUp(LAYER_COUNT, 16);
+				const uint32_t dispatchHeight = divRoundUp(MAX_NEURONS_PER_LAYER, 16);
+
+				vkCmdDispatch(compute.commandBuffer, dispatchWidth, dispatchHeight, 1);
+			}
+
+			{
+				vkCmdBindPipeline(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelines[compute.pipelineIndex + 1]);
+				//vkCmdBindDescriptorSets(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelineLayout, 0, 1, &compute.descriptorSet, 0, 0);
+
+				const uint32_t dispatchWidth = divRoundUp(textureColorMap.width, 8);
+				const uint32_t dispatchHeight = divRoundUp(textureColorMap.height, 8);
+
+				vkCmdDispatch(compute.commandBuffer, dispatchWidth, dispatchHeight, 1);
+			}
+
+
+			vkEndCommandBuffer(compute.commandBuffer);
+
 		}
 
-		vkEndCommandBuffer(compute.commandBuffer);
 
 	}
 
@@ -775,7 +823,7 @@ public:
 		VkComputePipelineCreateInfo computePipelineCreateInfo = vks::initializers::computePipelineCreateInfo(compute.pipelineLayout, 0);
 
 		// One pipeline for each available image filter
-		filterNames = { "nninit", "nninference"};
+		filterNames = { "nninit", "nninference", "nncleargradients", "nntraining", "nnoptimize"};
 		for (auto& shaderName : filterNames) {
 			std::string fileName = getShadersPath() + "mlp/" + shaderName + ".comp.spv";
 			computePipelineCreateInfo.stage = loadShader(fileName, VK_SHADER_STAGE_COMPUTE_BIT);
@@ -794,6 +842,8 @@ public:
 		// Create a command buffer for compute operations
 		VkCommandBufferAllocateInfo cmdBufAllocateInfo = vks::initializers::commandBufferAllocateInfo( compute.commandPool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1);
 		VK_CHECK_RESULT(vkAllocateCommandBuffers(device, &cmdBufAllocateInfo, &compute.commandBuffer));
+		VK_CHECK_RESULT(vkAllocateCommandBuffers(device, &cmdBufAllocateInfo, &compute.initnnCommandBuffer));
+
 
 		// Semaphore for compute & graphics sync
 		VkSemaphoreCreateInfo semaphoreCreateInfo = vks::initializers::semaphoreCreateInfo();
@@ -841,15 +891,31 @@ public:
 		VkPipelineStageFlags waitStageMask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
 
 		// Submit compute commands
-		VkSubmitInfo computeSubmitInfo = vks::initializers::submitInfo();
-		computeSubmitInfo.commandBufferCount = 1;
-		computeSubmitInfo.pCommandBuffers = &compute.commandBuffer;
-		computeSubmitInfo.waitSemaphoreCount = 1;
-		computeSubmitInfo.pWaitSemaphores = &graphics.semaphore;
-		computeSubmitInfo.pWaitDstStageMask = &waitStageMask;
-		computeSubmitInfo.signalSemaphoreCount = 1;
-		computeSubmitInfo.pSignalSemaphores = &compute.semaphore;
-		VK_CHECK_RESULT(vkQueueSubmit(compute.queue, 1, &computeSubmitInfo, VK_NULL_HANDLE));
+		if (mNNNeedsInitialization)
+		{
+			mNNNeedsInitialization = false;
+			VkSubmitInfo computeSubmitInfo = vks::initializers::submitInfo();
+			computeSubmitInfo.commandBufferCount = 1;
+			computeSubmitInfo.pCommandBuffers = &compute.initnnCommandBuffer;
+			computeSubmitInfo.waitSemaphoreCount = 1;
+			computeSubmitInfo.pWaitSemaphores = &graphics.semaphore;
+			computeSubmitInfo.pWaitDstStageMask = &waitStageMask;
+			computeSubmitInfo.signalSemaphoreCount = 1;
+			computeSubmitInfo.pSignalSemaphores = &compute.semaphore;
+			VK_CHECK_RESULT(vkQueueSubmit(compute.queue, 1, &computeSubmitInfo, VK_NULL_HANDLE));
+		}
+
+		{
+			VkSubmitInfo computeSubmitInfo = vks::initializers::submitInfo();
+			computeSubmitInfo.commandBufferCount = 1;
+			computeSubmitInfo.pCommandBuffers = &compute.commandBuffer;
+			computeSubmitInfo.waitSemaphoreCount = 1;
+			computeSubmitInfo.pWaitSemaphores = &graphics.semaphore;
+			computeSubmitInfo.pWaitDstStageMask = &waitStageMask;
+			computeSubmitInfo.signalSemaphoreCount = 1;
+			computeSubmitInfo.pSignalSemaphores = &compute.semaphore;
+			VK_CHECK_RESULT(vkQueueSubmit(compute.queue, 1, &computeSubmitInfo, VK_NULL_HANDLE));
+		}
 		VulkanExampleBase::prepareFrame();
 
 		VkPipelineStageFlags graphicsWaitStageMasks[] = { VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };

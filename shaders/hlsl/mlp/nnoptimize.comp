@@ -108,28 +108,34 @@ void forwardPass(float2 input, inout float activations[LAYER_COUNT * MAX_NEURONS
 }
 
 // Runs inference to produce image output using the current network state
-[numthreads(8, 8, 1)]
+[numthreads(16, 16, 1)]
 void main(
 	int2 groupID : SV_GroupID,
 	int2 groupThreadID : SV_GroupThreadID,
 	int2 LaunchIndex : SV_DispatchThreadID)
 {
-    if (LaunchIndex.x >= globalinfo.outputWidth || LaunchIndex.y >= globalinfo.outputHeight)
-        return;
+    const uint layer = LaunchIndex.x + 1;
+    const uint neuron = LaunchIndex.y;
+    if (layer >= LAYER_COUNT) return;
     
-    // Figure out UV coordinates for this pixel
-    const float2 uvs = float2(LaunchIndex) / float2(globalinfo.outputWidth - 1, globalinfo.outputHeight - 1);
+    const uint neuronCountCurrentLayer = neuronsPerLayer[layer];
+    const uint neuronCountPreviousLayer = neuronsPerLayer[layer - 1];
+    if (neuron >= neuronCountCurrentLayer) return;
     
-    // Do forward pass through the neural network with this pixel's UV coordinates as input
-    float activations[LAYER_COUNT * MAX_NEURONS_PER_LAYER];
-    forwardPass(uvs, activations);
+    // Update bias value
+    const uint neuronDataIndex = getNeuronDataIndex(layer, neuron);
+    const float gradBias = unpackFloat(gradientBiases[neuronDataIndex]) * globalinfo.rcpBatchSize;
     
-    // Map NN output to RGB result
-    const uint outputLayerActivationIndex = getNeuronDataIndex(LAYER_COUNT - 1, 0);
-    const float3 result = float3(activations[outputLayerActivationIndex + 0], 
-                                 activations[outputLayerActivationIndex + 1], 
-                                 activations[outputLayerActivationIndex + 2]);
+    biases[neuronDataIndex] -= gradBias * globalinfo.learningRate;
+
     
-    // Store output
-    resultImage[LaunchIndex] = float4(result, 0);
+    // Update weights leading to this neuron
+    for (uint previousNeuron = 0; previousNeuron < neuronCountPreviousLayer; previousNeuron++)
+    {
+        const uint weightIndex = getConnectionDataIndex(layer, previousNeuron, neuron);
+        const float gradWeight = unpackFloat(gradientWeights[weightIndex]) * globalinfo.rcpBatchSize;
+    
+
+        weights[weightIndex] -= gradWeight * globalinfo.learningRate;
+    }
 }
