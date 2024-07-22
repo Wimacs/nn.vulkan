@@ -59,6 +59,9 @@ public:
 
 	vks::Buffer  nnuniformData;
 
+	uint32_t mTrainingSteps = 0;
+	uint32_t mframeNumber = 0;
+
 	bool mNNNeedsInitialization = true;
 
 	// Resources for the graphics part of the example
@@ -429,13 +432,20 @@ public:
 
 	void updateUniformBuffer()
 	{
-		g_data.frameNumber = frameCounter;
+		g_data.frameNumber = mframeNumber;
 		g_data.layerCount = LAYER_COUNT;
 		g_data.outputHeight = textureColorMap.height;
 		g_data.outputWidth = textureColorMap.width;
-		g_data.batchSize = 4096;
+		g_data.batchSize = 2048;
 		g_data.rcpBatchSize = 1.0f / g_data.batchSize;
-		g_data.learningRate = 0.01f;
+		g_data.learningRate = 0.001f;
+
+		// Adam parameters
+		g_data.adamBeta1 = 0.9f;
+		g_data.adamBeta2 = 0.999f;
+		g_data.adamEpsilon = 0.00000001f;
+		g_data.adamBeta1T = glm::pow(g_data.adamBeta1, mTrainingSteps + 1);
+		g_data.adamBeta2T = glm::pow(g_data.adamBeta2, mTrainingSteps + 1);
 
 		memcpy(nnuniformData.mapped, &g_data, sizeof(NNData));
 	}
@@ -527,18 +537,14 @@ public:
 	void buildComputeCommandBuffer()
 	{
 
-
 		//nn init
 		//if (mNNNeedsInitialization)
 		{
 			// Flush the queue if we're rebuilding the command buffer after a pipeline change to ensure it's not currently in use
-			vkQueueWaitIdle(compute.queue);
-
 			VkCommandBufferBeginInfo cmdBufInfo = vks::initializers::commandBufferBeginInfo();
 
 			VK_CHECK_RESULT(vkBeginCommandBuffer(compute.initnnCommandBuffer, &cmdBufInfo));
 
-			mNNNeedsInitialization = false;
 			vkCmdBindPipeline(compute.initnnCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelines[compute.pipelineIndex]);
 			vkCmdBindDescriptorSets(compute.initnnCommandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelineLayout, 0, 1, &compute.descriptorSet, 0, 0);
 
@@ -554,7 +560,6 @@ public:
 
 		//nn traning + inference
 		{
-			vkQueueWaitIdle(compute.queue);
 
 			VkCommandBufferBeginInfo cmdBufInfo = vks::initializers::commandBufferBeginInfo();
 			VK_CHECK_RESULT(vkBeginCommandBuffer(compute.commandBuffer, &cmdBufInfo));
@@ -596,7 +601,6 @@ public:
 
 				vkCmdDispatch(compute.commandBuffer, dispatchWidth, dispatchHeight, 1);
 			}
-
 
 			vkEndCommandBuffer(compute.commandBuffer);
 
@@ -665,13 +669,10 @@ public:
 	void prepareGraphics()
 	{
 		// Create a semaphore for compute & graphics sync
-		VkSemaphoreCreateInfo semaphoreCreateInfo = vks::initializers::semaphoreCreateInfo();
-		VK_CHECK_RESULT(vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &graphics.semaphore));
+
 
 		// Signal the semaphore
 		VkSubmitInfo submitInfo = vks::initializers::submitInfo();
-		submitInfo.signalSemaphoreCount = 1;
-		submitInfo.pSignalSemaphores = &graphics.semaphore;
 		VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE));
 		VK_CHECK_RESULT(vkQueueWaitIdle(queue));
 
@@ -759,7 +760,7 @@ public:
 	void prepareCompute()
 	{
 		// Get a compute queue from the device
-		vkGetDeviceQueue(device, vulkanDevice->queueFamilyIndices.compute, 0, &compute.queue);
+		//vkGetDeviceQueue(device, vulkanDevice->queueFamilyIndices.compute, 0, &compute.queue);
 
 		// Create compute pipeline
 		// Compute pipelines are created separate from graphics pipelines even if they use the same queue
@@ -835,7 +836,7 @@ public:
 		// Separate command pool as queue family for compute may be different than graphics
 		VkCommandPoolCreateInfo cmdPoolInfo = {};
 		cmdPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-		cmdPoolInfo.queueFamilyIndex = vulkanDevice->queueFamilyIndices.compute;
+		cmdPoolInfo.queueFamilyIndex = vulkanDevice->queueFamilyIndices.graphics;
 		cmdPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
 		VK_CHECK_RESULT(vkCreateCommandPool(device, &cmdPoolInfo, nullptr, &compute.commandPool));
 
@@ -845,9 +846,6 @@ public:
 		VK_CHECK_RESULT(vkAllocateCommandBuffers(device, &cmdBufAllocateInfo, &compute.initnnCommandBuffer));
 
 
-		// Semaphore for compute & graphics sync
-		VkSemaphoreCreateInfo semaphoreCreateInfo = vks::initializers::semaphoreCreateInfo();
-		VK_CHECK_RESULT(vkCreateSemaphore(device, &semaphoreCreateInfo, nullptr, &compute.semaphore));
 
 		// Build a single command buffer containing the compute dispatch commands
 		buildComputeCommandBuffer();
@@ -893,43 +891,29 @@ public:
 		// Submit compute commands
 		if (mNNNeedsInitialization)
 		{
-			mNNNeedsInitialization = false;
+			mTrainingSteps = 0;
 			VkSubmitInfo computeSubmitInfo = vks::initializers::submitInfo();
 			computeSubmitInfo.commandBufferCount = 1;
 			computeSubmitInfo.pCommandBuffers = &compute.initnnCommandBuffer;
-			computeSubmitInfo.waitSemaphoreCount = 1;
-			computeSubmitInfo.pWaitSemaphores = &graphics.semaphore;
-			computeSubmitInfo.pWaitDstStageMask = &waitStageMask;
-			computeSubmitInfo.signalSemaphoreCount = 1;
-			computeSubmitInfo.pSignalSemaphores = &compute.semaphore;
-			VK_CHECK_RESULT(vkQueueSubmit(compute.queue, 1, &computeSubmitInfo, VK_NULL_HANDLE));
+			VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &computeSubmitInfo, VK_NULL_HANDLE));
 		}
 
+		if (!mNNNeedsInitialization)
 		{
+			mTrainingSteps += 1;
 			VkSubmitInfo computeSubmitInfo = vks::initializers::submitInfo();
 			computeSubmitInfo.commandBufferCount = 1;
 			computeSubmitInfo.pCommandBuffers = &compute.commandBuffer;
-			computeSubmitInfo.waitSemaphoreCount = 1;
-			computeSubmitInfo.pWaitSemaphores = &graphics.semaphore;
-			computeSubmitInfo.pWaitDstStageMask = &waitStageMask;
-			computeSubmitInfo.signalSemaphoreCount = 1;
-			computeSubmitInfo.pSignalSemaphores = &compute.semaphore;
-			VK_CHECK_RESULT(vkQueueSubmit(compute.queue, 1, &computeSubmitInfo, VK_NULL_HANDLE));
+			VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &computeSubmitInfo, VK_NULL_HANDLE));
 		}
+		mframeNumber += 1;
+		mNNNeedsInitialization = false;
 		VulkanExampleBase::prepareFrame();
 
-		VkPipelineStageFlags graphicsWaitStageMasks[] = { VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-		VkSemaphore graphicsWaitSemaphores[] = { compute.semaphore, semaphores.presentComplete };
-		VkSemaphore graphicsSignalSemaphores[] = { graphics.semaphore, semaphores.renderComplete };
 
 		// Submit graphics commands
 		submitInfo.commandBufferCount = 1;
 		submitInfo.pCommandBuffers = &drawCmdBuffers[currentBuffer];
-		submitInfo.waitSemaphoreCount = 2;
-		submitInfo.pWaitSemaphores = graphicsWaitSemaphores;
-		submitInfo.pWaitDstStageMask = graphicsWaitStageMasks;
-		submitInfo.signalSemaphoreCount = 2;
-		submitInfo.pSignalSemaphores = graphicsSignalSemaphores;
 		VK_CHECK_RESULT(vkQueueSubmit(queue, 1, &submitInfo, VK_NULL_HANDLE));
 
 		VulkanExampleBase::submitFrame();

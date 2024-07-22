@@ -115,7 +115,6 @@ void forwardPass(float2 input, inout float activations[LAYER_COUNT * MAX_NEURONS
 void backpropagation(float3 target, float activations[LAYER_COUNT * MAX_NEURONS_PER_LAYER])
 {
     float errors[LAYER_COUNT * MAX_NEURONS_PER_LAYER];
-    uint temp;
     // Output layer derivatives
     {
         const uint neuronCountCurrentLayer = neuronsPerLayer[LAYER_COUNT - 1];
@@ -129,7 +128,7 @@ void backpropagation(float3 target, float activations[LAYER_COUNT * MAX_NEURONS_
             const float dO_Z = ACTIVATION_FUNCTION_DERIV(neuronActivation);
             const float dCost_Z = dCost_O * dO_Z;
             errors[neuronDataIndex] = dCost_Z;
-            InterlockedAdd(gradientBiases[NonUniformResourceIndex(neuronDataIndex)], packFloat(dCost_Z), temp);
+            InterlockedAdd(gradientBiases[NonUniformResourceIndex(neuronDataIndex)], packFloat(dCost_Z));
             
             // Update weights
             for (uint previousNeuron = 0; previousNeuron < neuronCountPreviousLayer; previousNeuron++)
@@ -137,7 +136,7 @@ void backpropagation(float3 target, float activations[LAYER_COUNT * MAX_NEURONS_
                 const uint previousNeuronDataIndex = getNeuronDataIndex(LAYER_COUNT - 2, previousNeuron);
                 const float dCost_weight = dCost_Z * activations[previousNeuronDataIndex];
                 const uint weightIndex = getConnectionDataIndex(LAYER_COUNT - 1, previousNeuron, neuron);
-                InterlockedAdd(gradientWeights[NonUniformResourceIndex(weightIndex)], packFloat(dCost_weight), temp);
+                InterlockedAdd(gradientWeights[NonUniformResourceIndex(weightIndex)], packFloat(dCost_weight));
             }
         }
     }
@@ -166,7 +165,7 @@ void backpropagation(float3 target, float activations[LAYER_COUNT * MAX_NEURONS_
                 const float dO_Z = ACTIVATION_FUNCTION_DERIV(neuronActivation);
                 const float dCost_Z = dCost_O * dO_Z;
                 errors[neuronDataIndex] = dCost_Z;
-                InterlockedAdd(gradientBiases[NonUniformResourceIndex(neuronDataIndex)], packFloat(dCost_Z), temp);
+                InterlockedAdd(gradientBiases[NonUniformResourceIndex(neuronDataIndex)], packFloat(dCost_Z));
 
                 // Update weights
                 for (uint previousNeuron = 0; previousNeuron < neuronCountPreviousLayer; previousNeuron++)
@@ -174,7 +173,7 @@ void backpropagation(float3 target, float activations[LAYER_COUNT * MAX_NEURONS_
                     const uint previousNeuronDataIndex = getNeuronDataIndex(layer - 1, previousNeuron);
                     const float dCost_weight = dCost_Z * activations[previousNeuronDataIndex];
                     const uint weightIndex = getConnectionDataIndex(layer, previousNeuron, neuron);
-                    InterlockedAdd(gradientWeights[NonUniformResourceIndex(weightIndex)], packFloat(dCost_weight), temp);
+                    InterlockedAdd(gradientWeights[NonUniformResourceIndex(weightIndex)], packFloat(dCost_weight));
                 }
             }
         }
