@@ -1,6 +1,6 @@
 #define LAYER_COUNT 4
 #define MAX_NEURONS_PER_LAYER 64
-
+#define PI 3.141592653589793
 struct NNData
 {
 	uint frameNumber;

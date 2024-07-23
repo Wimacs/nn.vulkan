@@ -1,3 +1,5 @@
+#include <stb_image.h>
+
 #include "vulkanexamplebase.h"
 
 #define MAX_NEURONS_PER_LAYER 64
@@ -344,13 +346,22 @@ public:
 		updateNNArch();
 	}
 
+
+	int getInputLayerNeuronCount() {
+
+		const int nInputs = 2; //< We have 2 UV coordinates as input
+
+		return nInputs * g_data.frequencies * 2;
+
+	}
+
 	void updateNNArch()
 	{
 
 		int neuronsPerLayer[LAYER_COUNT];
 		// Figure out number of neurons per layer
 		{
-			neuronsPerLayer[0] = 2 /*getInputLayerNeuronCount()*/;
+			neuronsPerLayer[0] = getInputLayerNeuronCount();
 			neuronsPerLayer[LAYER_COUNT - 1] = 3; //RGB output
 			for (int i = 1; i < LAYER_COUNT - 1; i++)
 			{
@@ -436,9 +447,10 @@ public:
 		g_data.layerCount = LAYER_COUNT;
 		g_data.outputHeight = textureColorMap.height;
 		g_data.outputWidth = textureColorMap.width;
-		g_data.batchSize = 2048;
+		g_data.batchSize = 4096;
 		g_data.rcpBatchSize = 1.0f / g_data.batchSize;
 		g_data.learningRate = 0.001f;
+		g_data.frequencies = 8;
 
 		// Adam parameters
 		g_data.adamBeta1 = 0.9f;
@@ -537,6 +549,44 @@ public:
 	void buildComputeCommandBuffer()
 	{
 
+		VkBufferMemoryBarrier bufferBarrier1 = {};
+		bufferBarrier1.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+
+		bufferBarrier1.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		bufferBarrier1.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		bufferBarrier1.buffer = gradientBiases.buffer;  // 需要同步的buffer
+		bufferBarrier1.offset = 0;
+		bufferBarrier1.size = VK_WHOLE_SIZE;
+
+		VkBufferMemoryBarrier bufferBarrier2 = {};
+		bufferBarrier2.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+
+		bufferBarrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		bufferBarrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		bufferBarrier2.buffer = gradientWeights.buffer;  // 需要同步的buffer
+		bufferBarrier2.offset = 0;
+		bufferBarrier2.size = VK_WHOLE_SIZE;
+
+		VkBufferMemoryBarrier bufferBarrier3 = {};
+		bufferBarrier3.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+
+		bufferBarrier3.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		bufferBarrier3.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		bufferBarrier3.buffer = Biases.buffer;  // 需要同步的buffer
+		bufferBarrier3.offset = 0;
+		bufferBarrier3.size = VK_WHOLE_SIZE;
+
+		VkBufferMemoryBarrier bufferBarrier4 = {};
+		bufferBarrier4.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+
+		bufferBarrier4.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		bufferBarrier4.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		bufferBarrier4.buffer = weights.buffer;  // 需要同步的buffer
+		bufferBarrier4.offset = 0;
+		bufferBarrier4.size = VK_WHOLE_SIZE;
+
+
+
 		//nn init
 		//if (mNNNeedsInitialization)
 		{
@@ -552,6 +602,7 @@ public:
 			const uint32_t dispatchHeight = divRoundUp(MAX_NEURONS_PER_LAYER, 16);
 
 			vkCmdDispatch(compute.initnnCommandBuffer, dispatchWidth, dispatchHeight, 1);
+
 
 			vkEndCommandBuffer(compute.initnnCommandBuffer);
 		}
@@ -574,6 +625,26 @@ public:
 				vkCmdDispatch(compute.commandBuffer, dispatchWidth, dispatchHeight, 1);
 			}
 
+			vkCmdPipelineBarrier(
+				compute.commandBuffer,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 
+				0,
+				0, nullptr,
+				1, &bufferBarrier1,
+				0, nullptr
+			);
+
+			vkCmdPipelineBarrier(
+				compute.commandBuffer,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 
+				0,
+				0, nullptr,
+				1, &bufferBarrier2,
+				0, nullptr
+			);
+
 			{
 				vkCmdBindPipeline(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelines[compute.pipelineIndex + 3]);
 				//vkCmdBindDescriptorSets(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelineLayout, 0, 1, &compute.descriptorSet, 0, 0);
@@ -581,6 +652,26 @@ public:
 				const uint32_t dispatchWidth = divRoundUp(g_data.batchSize, 8);
 				vkCmdDispatch(compute.commandBuffer, dispatchWidth, 1, 1);
 			}
+
+			vkCmdPipelineBarrier(
+				compute.commandBuffer,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 
+				0,
+				0, nullptr,
+				1, &bufferBarrier1,
+				0, nullptr
+			);
+
+			vkCmdPipelineBarrier(
+				compute.commandBuffer,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+				0,
+				0, nullptr,
+				1, &bufferBarrier2,
+				0, nullptr
+			);
 
 			{
 				vkCmdBindPipeline(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelines[compute.pipelineIndex + 4]);
@@ -591,6 +682,26 @@ public:
 
 				vkCmdDispatch(compute.commandBuffer, dispatchWidth, dispatchHeight, 1);
 			}
+
+			vkCmdPipelineBarrier(
+				compute.commandBuffer,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+				0,
+				0, nullptr,
+				1, &bufferBarrier3,
+				0, nullptr
+			);
+
+			vkCmdPipelineBarrier(
+				compute.commandBuffer,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+				VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+				0,
+				0, nullptr,
+				1, &bufferBarrier4,
+				0, nullptr
+			);
 
 			{
 				vkCmdBindPipeline(compute.commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, compute.pipelines[compute.pipelineIndex + 1]);

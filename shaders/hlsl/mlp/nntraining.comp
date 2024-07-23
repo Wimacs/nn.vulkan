@@ -7,16 +7,16 @@ Texture2D inputImage : register(t0);
 RWTexture2D<float4> resultImage : register(u1);
 RWStructuredBuffer<float> weights : register(u2);
 RWStructuredBuffer<float> biases : register(u3);
-RWStructuredBuffer<int> gradientWeights : register(u4);
-RWStructuredBuffer<int> gradientBiases : register(u5);
-RWStructuredBuffer<float> adamWeightsMeans : register(u6);
-RWStructuredBuffer<float> adamWeightsVariances : register(u7);
-RWStructuredBuffer<float> adamBiasesMeans : register(u8);
-RWStructuredBuffer<float> adamBiasesVariances : register(u9);
+RWStructuredBuffer<int> gradientBiases : register(u4);
+RWStructuredBuffer<int> gradientWeights : register(u5);
+RWStructuredBuffer<float> adamBiasesMeans : register(u6);
+RWStructuredBuffer<float> adamBiasesVariances : register(u7);
+RWStructuredBuffer<float> adamWeightsMeans : register(u8);
+RWStructuredBuffer<float> adamWeightsVariances : register(u9);
 
-StructuredBuffer<uint> neuronsPerLayer : register(t11);;
-StructuredBuffer<uint> connectionDataBaseOffsets : register(t12);;
-StructuredBuffer<uint> neuronDataBaseOffsets : register(t13);;
+StructuredBuffer<uint> neuronsPerLayer : register(t11);
+StructuredBuffer<uint> connectionDataBaseOffsets : register(t12);
+StructuredBuffer<uint> neuronDataBaseOffsets : register(t13);
 
 cbuffer globalinfo : register(b10) { NNData globalinfo; }
 
@@ -33,41 +33,32 @@ uint getConnectionDataIndex(uint layer, uint neuronFrom, uint neuronTo)
 
 // Source: "Positional Encoding" from "NeRF: Representing Scenes as Neural RadianceFields for View Synthesis"
 // https://arxiv.org/pdf/2003.08934
-// void frequencyEncoding(const float2 input, inout float activations[LAYER_COUNT * MAX_NEURONS_PER_LAYER])
-// {
-//     const int inputCount = 2;
+void frequencyEncoding(const float2 input, inout float activations[LAYER_COUNT * MAX_NEURONS_PER_LAYER])
+{
+    const int inputCount = 2;
     
-//     int index = 0;
-//     [unroll]
-//     for (int inputIndex = 0; inputIndex < inputCount; inputIndex++)
-//     {
-//         const float p = PI * input[inputIndex];
-//         int modifier = 1;
+    int index = 0;
+    [unroll]
+    for (int inputIndex = 0; inputIndex < inputCount; inputIndex++)
+    {
+        const float p = PI * input[inputIndex];
+        int modifier = 1;
         
-//         [unroll]
-//         for (int f = 0; f < NUM_FREQUENCIES; f++)
-//         {
-//             const float x = modifier * p;
-//             activations[index++] = sin(x);
-//             activations[index++] = cos(x);
-//             modifier *= 2;
-//         }
-//     }
-// }
+        [unroll]
+        for (int f = 0; f < globalinfo.frequencies; f++)
+        {
+            const float x = modifier * p;
+            activations[index++] = sin(x);
+            activations[index++] = cos(x);
+            modifier *= 2;
+        }
+    }
+}
 
 void encodeInput(const float2 input, inout float activations[LAYER_COUNT * MAX_NEURONS_PER_LAYER])
 {
-// #if USE_IDENTITY_ENCODING
-    
-    // Identity encoding passes input as it is
-    activations[0] = input.x;
-    activations[1] = input.y;
-    
-// #else // if USE_FREQUENCY_ENCODING
-    
-//     frequencyEncoding(input, activations);
-    
-// #endif
+
+    frequencyEncoding(input, activations);
 }
 
 // =========================================================================

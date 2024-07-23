@@ -1,15 +1,16 @@
 #include "nnutil.h"
 
+
 Texture2D inputImage : register(t0);
 RWTexture2D<float4> resultImage : register(u1);
 RWStructuredBuffer<float> weights : register(u2);
-RWStructuredBuffer<float> Biases : register(u3);
-RWStructuredBuffer<int> gradientWeights : register(u4);
-RWStructuredBuffer<int> gradientBiases : register(u5);
-RWStructuredBuffer<float> adamWeightsMeans : register(u6);
-RWStructuredBuffer<float> adamWeightsVariances : register(u7);
-RWStructuredBuffer<float> adamBiasesMeans : register(u8);
-RWStructuredBuffer<float> adamBiasesVariances : register(u9);
+RWStructuredBuffer<float> biases : register(u3);
+RWStructuredBuffer<int> gradientBiases : register(u4);
+RWStructuredBuffer<int> gradientWeights : register(u5);
+RWStructuredBuffer<float> adamBiasesMeans : register(u6);
+RWStructuredBuffer<float> adamBiasesVariances : register(u7);
+RWStructuredBuffer<float> adamWeightsMeans : register(u8);
+RWStructuredBuffer<float> adamWeightsVariances : register(u9);
 
 StructuredBuffer<uint> neuronsPerLayer : register(t11);;
 StructuredBuffer<uint> connectionDataBaseOffsets : register(t12);;
@@ -45,12 +46,12 @@ void main(
     
     // Clear bias value
     const uint neuronDataIndex = getNeuronDataIndex(layer, neuron);
-    gradientBiases[neuronDataIndex] = 0.0f;
+    gradientBiases[neuronDataIndex] = 0;
 
     // Clear weights leading to this neuron
     for (uint previousNeuron = 0; previousNeuron < neuronCountPreviousLayer; previousNeuron++)
     {
         const uint weightIndex = getConnectionDataIndex(layer, previousNeuron, neuron);
-        gradientWeights[weightIndex] = 0.0f;
+        gradientWeights[weightIndex] = 0;
     }
 }
